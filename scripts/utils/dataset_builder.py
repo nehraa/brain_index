@@ -160,9 +160,18 @@ def build_diverse_dataset(
             print(f"[DATASET]   -> After {domain} filter: {before_filter} -> {len(raw_prompts)}")
 
         # ---- Sample to target count ----
+        if not raw_prompts:
+            print(f"[DATASET]   -> WARNING: No prompts collected for domain '{domain}', using fallback")
+            raw_prompts = [
+                f"Sample prompt {i+1} for {domain}"
+                for i in range(count)
+            ]
+
         if len(raw_prompts) >= count:
             # Simple stratified sampling by taking evenly spaced samples
             step = len(raw_prompts) // count
+            if step == 0:
+                step = 1  # Guard against count > len(raw_prompts)
             sampled = raw_prompts[::step][:count]
         else:
             # Not enough — repeat with shuffling
