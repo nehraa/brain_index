@@ -47,7 +47,7 @@ from dataset_builder import build_diverse_dataset
 # ==============================================================================
 
 MODEL_NAME = "Qwen/Qwen3-8B"
-LAYERS_TO_CAPTURE = [4, 9, 14, 19, 24, 29, 34, 36]
+LAYERS_TO_CAPTURE = [4, 9, 14, 19, 24, 29, 34, 35]
 TOP_K = 300
 
 # 100K across 7 domains (proportional to original plan)

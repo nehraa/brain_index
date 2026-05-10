@@ -22,6 +22,9 @@ import time
 import traceback
 from typing import List, Dict, Tuple
 
+# Add memory allocation config to avoid fragmentation
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 import torch
 import pandas as pd
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
@@ -37,7 +40,7 @@ from dataset_builder import build_diverse_dataset
 # ==============================================================================
 
 MODEL_NAME = "Qwen/Qwen3-8B"
-LAYERS_TO_CAPTURE = [4, 9, 14, 19, 24, 29, 34, 36]
+LAYERS_TO_CAPTURE = [4, 9, 14, 19, 24, 29, 34, 35]
 TOP_K = 300
 NUM_VERIFY_PROMPTS = 100
 OUTPUT_DIR = "brain_index/data"
@@ -166,10 +169,7 @@ print("=" * 80)
 
 try:
     quantization_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_compute_dtype=torch.bfloat16
+        load_in_8bit=True,
     )
     print("[QUANT] SUCCESS: BitsAndBytesConfig created")
     print(f"[QUANT]   load_in_4bit: True")
@@ -195,21 +195,19 @@ load_start = time.time()
 try:
     print(f"[MODEL] Step 5.1: Calling AutoModelForCausalLM.from_pretrained...")
     print(f"[MODEL]   Model: {MODEL_NAME}")
-    print(f"[MODEL]   device_map: auto")
+    print(f"[MODEL]   device_map: cuda:0")
     print(f"[MODEL]   quantization_config: BitsAndBytesConfig (Q4 nf4)")
-    print(f"[MODEL]   attn_implementation: sdpa")
+    print(f"[MODEL]   attn_implementation: eager")
 
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
         device_map="auto",
-        quantization_config=quantization_config,
-        attn_implementation="sdpa"
+        low_cpu_mem_usage=True,
     )
 
     load_elapsed = time.time() - load_start
     print(f"[MODEL] SUCCESS: Model loaded in {load_elapsed:.1f}s")
     print(f"[MODEL] Model type: {type(model).__name__}")
-    print(f"[MODEL] Model device map: {model.hf_device_map}")
 
 except Exception as e:
     print(f"[MODEL] ERROR: Failed to load model: {e}")
@@ -233,17 +231,18 @@ print("=" * 80)
 
 try:
     # Navigate the model hierarchy
+    # model = Qwen3ForCausalLM
+    # model.model = Qwen3Model (holds layers directly at model.model.layers)
+    # model.model.layers = nn.ModuleList of Qwen3DecoderLayer (36 layers)
     print(f"[MODULE] model type: {type(model).__name__} (expected: Qwen3ForCausalLM)")
 
     model_inner = model.model
     print(f"[MODULE] model.model type: {type(model_inner).__name__} (expected: Qwen3Model)")
 
-    model_inner2 = model_inner.model
-    print(f"[MODULE] model.model.model type: {type(model_inner2).__name__} (expected: Qwen3Model)")
-
-    layers_module = model_inner2.layers
-    print(f"[MODULE] model.model.model.layers type: {type(layers_module).__name__}")
-    print(f"[MODULE] model.model.model.layers length: {len(layers_module)} (expected: 36)")
+    # Qwen3Model has .layers directly, not a nested .model
+    layers_module = model_inner.layers
+    print(f"[MODULE] model.model.layers type: {type(layers_module).__name__}")
+    print(f"[MODULE] model.model.layers length: {len(layers_module)} (expected: 36)")
 
     # Verify layer types
     for layer_idx in LAYERS_TO_CAPTURE[:2]:  # Check first 2
@@ -279,7 +278,7 @@ def make_hook(layer_idx: int):
 try:
     print(f"[HOOKS] Registering {len(LAYERS_TO_CAPTURE)} hooks on layers: {LAYERS_TO_CAPTURE}")
     for i, layer_idx in enumerate(LAYERS_TO_CAPTURE):
-        layer = model.model.model.layers[layer_idx]
+        layer = model.model.layers[layer_idx]
         h = layer.register_forward_hook(make_hook(layer_idx))
         handles.append(h)
         print(f"[HOOKS]   Registered hook {i+1}/{len(LAYERS_TO_CAPTURE)} on layer {layer_idx} "
