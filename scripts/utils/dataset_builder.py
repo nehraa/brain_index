@@ -24,13 +24,14 @@ from datasets import load_dataset
 # column is typically 'instruction' or 'prompt' or 'text'
 
 DOMAIN_SOURCES: Dict[str, tuple] = {
-    "reasoning": ("open-thoughts/AgentTrove", None, "problem"),
-    "creative": ("cambridgeltl/OpenAssistant/oa_top_level_2023", None, "text"),
-    "code": ("bigcode/the-stack-matquiz", None, "instruction"),
-    "general": ("yahma/alpaca", None, "instruction"),
-    "summarization": ("samsum", "samsum", "dialogue"),
-    "translation": ("cambridgeltl/OpenAssistant/oa_top_level_2023", None, "text"),
-    "agentic": ("open-thoughts/AgentTrove", None, "problem"),
+    # reasoning/agentic: open-thoughts/AgentTrove has 'conversations' column (list of chat dicts)
+    "reasoning": ("open-thoughts/AgentTrove", None, "conversations"),
+    "creative": ("stingning/ultrachat", None, "data"),
+    "code": ("HuggingFaceH4/instruction-dataset", None, "prompt"),
+    "general": ("HuggingFaceH4/instruction-dataset", None, "prompt"),
+    "summarization": ("stingning/ultrachat", None, "data"),
+    "translation": ("stingning/ultrachat", None, "data"),
+    "agentic": ("open-thoughts/AgentTrove", None, "conversations"),
 }
 
 
@@ -83,6 +84,61 @@ FILTER_FUNCTIONS = {
 
 
 # ==============================================================================
+# PROMPT EXTRACTION HELPER
+# ==============================================================================
+
+def _extract_prompt_text(item, text_column):
+    """Extract prompt text from a dataset item, handling nested formats.
+
+    Handles:
+    - AgentTrove 'conversations': list of {role, value} dicts
+    - ultrachat 'data': list of {role, content} dicts
+    - Standard flat columns: text, instruction, prompt, etc.
+    """
+    # AgentTrove nested format: 'conversations' = [{role, value}, ...]
+    if text_column == "conversations" and text_column in item:
+        convs = item[text_column]
+        if isinstance(convs, list) and len(convs) > 0:
+            for conv in reversed(convs):
+                if isinstance(conv, dict) and conv.get("role") in ("user", "human"):
+                    val = conv.get("value", "")
+                    if val and isinstance(val, str) and len(val) > 10:
+                        return val.strip()
+            # Fallback: first user message
+            for conv in convs:
+                if isinstance(conv, dict) and conv.get("role") in ("user", "human"):
+                    val = conv.get("value", "")
+                    if val and isinstance(val, str) and len(val) > 10:
+                        return val.strip()
+
+    # ultrachat nested format: 'data' = list of strings (messages)
+    if text_column == "data" and text_column in item:
+        data = item[text_column]
+        if isinstance(data, list) and len(data) > 0:
+            # data is a list of strings (human/assistant messages alternating)
+            # Get first human message (usually index 0 or 1)
+            for msg in data:
+                if isinstance(msg, str) and len(msg) > 10:
+                    return msg.strip()
+
+    # Standard flat column extraction
+    for col in [text_column, "text", "instruction", "prompt", "input", "message", "content", "problem", "question"]:
+        if col and col in item:
+            val = item[col]
+            if val and isinstance(val, str) and len(val) > 10:
+                return val.strip()
+            # Handle list-of-dict (e.g., [{content: "..."}])
+            if isinstance(val, list) and len(val) > 0:
+                first = val[0]
+                if isinstance(first, dict):
+                    v = first.get("content", first.get("text", first.get("value", "")))
+                    if v and isinstance(v, str) and len(v) > 10:
+                        return v.strip()
+
+    return None
+
+
+# ==============================================================================
 # MAIN BUILDER FUNCTION
 # ==============================================================================
 
@@ -126,10 +182,17 @@ def build_diverse_dataset(
             print(f"[DATASET]   -> Loaded! Stream mode: {ds.n_shards} shards")
         except Exception as e:
             print(f"[DATASET]   -> ERROR loading dataset '{dataset_name}': {e}")
-            print(f"[DATASET]   -> Falling back to yahma/alpaca for {domain}")
-            ds = load_dataset("yahma/alpaca", split="train", streaming=True)
-            text_column = "instruction"
-            print(f"[DATASET]   -> Fallback loaded.")
+            print(f"[DATASET]   -> Falling back to stingning/ultrachat")
+            try:
+                ds = load_dataset("stingning/ultrachat", split="train", streaming=True)
+                text_column = "data"
+                print(f"[DATASET]   -> Fallback loaded.")
+            except Exception as e2:
+                print(f"[DATASET]   -> Fallback also failed: {e2}")
+                print(f"[DATASET]   -> Using built-in domain prompts for {domain}")
+                raw_prompts = [f"Sample {domain} prompt {i+1}" for i in range(count)]
+                all_prompts.extend(raw_prompts)
+                continue
 
         # ---- Collect prompts from dataset ----
         raw_prompts: List[str] = []
@@ -137,9 +200,9 @@ def build_diverse_dataset(
 
         try:
             for i, item in enumerate(iterator):
-                prompt_text = item.get(text_column, item.get("instruction", item.get("text", "")))
-                if prompt_text and isinstance(prompt_text, str) and len(prompt_text) > 10:
-                    raw_prompts.append(prompt_text.strip())
+                prompt_text = _extract_prompt_text(item, text_column)
+                if prompt_text:
+                    raw_prompts.append(prompt_text)
 
                 if i >= 10000:  # Safety cap to avoid infinite streaming
                     print(f"[DATASET]   -> Safety cap reached at {i} items")
