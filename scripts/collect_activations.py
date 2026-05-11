@@ -260,6 +260,13 @@ def collect_activations(resume: bool = False, verify_only: bool = False):
         torch.cuda.empty_cache()
         gc.collect()
 
+        # ---- Memory stats logging (every 500 prompts) ----
+        if (i + 1) % 500 == 0:
+            mem_allocated = torch.cuda.memory_allocated() / 1e9
+            mem_reserved = torch.cuda.memory_reserved() / 1e9
+            mem_free = (14.5 - mem_allocated) if mem_allocated < 14.5 else 0
+            print(f"\n[MEM] prompt={i+1} GPU_alloc={mem_allocated:.2f}GB reserved={mem_reserved:.2f}GB free≈{mem_free:.2f}GB")
+
         # ---- Extract Sparse ----
         row = {
             "prompt_id": i,
