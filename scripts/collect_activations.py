@@ -31,6 +31,7 @@ import argparse
 import traceback
 from typing import List, Dict, Tuple, Optional
 
+import gc
 import torch
 import pandas as pd
 from tqdm import tqdm
@@ -249,6 +250,15 @@ def collect_activations(resume: bool = False, verify_only: bool = False):
         captured.clear()
         with torch.no_grad():
             outputs = model(input_ids=input_ids, attention_mask=inputs.attention_mask.to(model.device))
+
+        # EXPLICIT MEMORY CLEANUP - prevent GPU OOM accumulation
+        del inputs, input_ids, outputs
+        for layer_idx in LAYERS_TO_CAPTURE:
+            if layer_idx in captured:
+                del captured[layer_idx]
+        captured.clear()
+        torch.cuda.empty_cache()
+        gc.collect()
 
         # ---- Extract Sparse ----
         row = {
